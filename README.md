@@ -34,7 +34,7 @@ python Main_Diffusion.py
 
 Train with default settings, then optionally continue training by changing `epoch` from 100 → 50 and `step_probs` from `[0.0, 1.0]` → `[0.0, 0.0, 0.0, 1.0]` (set `training_load_weight` appropriately).
 
-Training results:
+Sampling results (T=1000 recurrent steps without updates):
 
 - 100 epochs with `step_probs=[0.0, 1.0] (s=1)` (~5h on A6000):
 
@@ -68,6 +68,8 @@ Offline generation → Distill training → One‑step evaluation
    - Images saved under `sampled_dir` (e.g., `./SampledImgs/distill/`)
 
 Distilled (one‑step) result:
+
+![distilled](assets/distilled.png)
 
 ## Recipes
 - Reproduce baseline: run Main_Diffusion.py (default), then fine‑tune with updated `step_probs`
