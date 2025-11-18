@@ -90,11 +90,22 @@ Distilled (one‑step) result:
 
 Files are stored as `.npz` containers compressed with zstd (`.zst`). Quantization follows PyTorch AO / FBGEMM‑compatible per‑channel symmetric INT8 with percentile clipping.
 
+## Models
+
+This project uses a pretrained DDPM-CIFAR10 UNet as the teacher. The code automatically selects the model to use:
+
+- **Priority**: Local EMA model at `Diffusion/ddpm_ema_cifar10/unet` (recommended for better performance)
+  - Download from: [ddpm_ema_cifar10.zip](https://github.com/VainF/Diff-Pruning/releases/download/v0.0.1/ddpm_ema_cifar10.zip)
+  - Extract and place the `ddpm_ema_cifar10` directory under `Diffusion/`
+- **Fallback**: Hugging Face Hub model `google/ddpm-cifar10-32` (non-EMA version, used if local EMA model is not found)
+
+The EMA version provides better performance than the non-EMA model, so it is recommended to download and use it.
+
 ## References
 This project is based on the following repository:
 
 - [zoubohao/DenoisingDiffusionProbabilityModel-ddpm-](https://github.com/zoubohao/DenoisingDiffusionProbabilityModel-ddpm-)
 
-We also use the following pretrained model:
-
-- [google/ddpm-cifar10-32](https://huggingface.co/google/ddpm-cifar10-32)
+We also use the following pretrained models:
+- [ddpm_ema_cifar10](https://github.com/VainF/Diff-Pruning/releases/download/v0.0.1/ddpm_ema_cifar10.zip) (EMA version, recommended)
+- [google/ddpm-cifar10-32](https://huggingface.co/google/ddpm-cifar10-32) (non-EMA, fallback)

@@ -1,0 +1,8 @@
+.DS_Store
+Checkpoints/
+SampledImgs/
+CIFAR10/
+DistillData/
+Diffusion/ddpm_ema_cifar10
+*.pkl
+*.pt

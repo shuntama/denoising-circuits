@@ -1,4 +1,5 @@
 import math
+import os
 import torch
 from torch import nn
 from torch.nn import init
@@ -28,8 +29,31 @@ def _freeze_all_params(mod: nn.Module) -> None:
 
 ### Diffusers UNet helpers (DDPM)
 
-def _load_diffusers_unet(model_id: str = 'google/ddpm-cifar10-32', device: torch.device | None = None, remove_conv_in: bool = False, remove_conv_out: bool = False) -> UNet2DModel:
-    unet = UNet2DModel.from_pretrained(model_id)
+def _load_diffusers_unet(
+    device: torch.device | None = None,
+    remove_conv_in: bool = False,
+    remove_conv_out: bool = False,
+) -> UNet2DModel:
+    """
+    Load DDPM-CIFAR10 UNet helper.
+    - Priority: Local EMA model at `Diffusion/ddpm_ema_cifar10/unet`
+    - Fallback: Hugging Face Hub model `google/ddpm-cifar10-32`
+    """
+    # Search for EMA model using relative path from this file
+    ema_root = os.path.join(os.path.dirname(__file__), "ddpm_ema_cifar10")
+    ema_unet_dir = os.path.join(ema_root, "unet")
+
+    if os.path.isdir(ema_unet_dir):
+        print(f"Loading local EMA UNet from: {ema_unet_dir}")
+        unet = UNet2DModel.from_pretrained(
+            pretrained_model_name_or_path=ema_root,
+            subfolder="unet",
+            local_files_only=True,
+        )
+    else:
+        print(f"Local EMA UNet not found at {ema_unet_dir}, fallback to: google/ddpm-cifar10-32")
+        unet = UNet2DModel.from_pretrained('google/ddpm-cifar10-32')
+
     if device is not None:
         unet.to(device)
     if remove_conv_in:
