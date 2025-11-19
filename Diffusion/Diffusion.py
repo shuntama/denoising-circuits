@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,6 +12,21 @@ def extract(v, t, x_shape):
     device = t.device
     out = torch.gather(v, index=t, dim=0).float().to(device)
     return out.view([t.shape[0]] + [1] * (len(x_shape) - 1))
+
+
+def _cosine_blend_losses(loss_fine: torch.Tensor, loss_coarse: torch.Tensor, t_eff: torch.Tensor, T: int) -> torch.Tensor:
+    """
+    Blend two per-example losses with a cosine schedule over time:
+      - t_eff = 0   -> weight_fine = 1, weight_coarse = 0
+      - t_eff = T-1 -> weight_fine = 0, weight_coarse = 1
+    """
+    tau = t_eff.float() / max(T - 1, 1)
+    weight_coarse = 0.5 * (1.0 - torch.cos(math.pi * tau))
+    weight_fine = 1.0 - weight_coarse
+    if weight_coarse.ndim == 1:
+        weight_coarse = weight_coarse.view(-1, 1, 1, 1)
+        weight_fine = weight_fine.view(-1, 1, 1, 1)
+    return weight_fine * loss_fine + weight_coarse * loss_coarse
 
 
 class GaussianDiffusionTrainer(nn.Module):
@@ -182,19 +198,39 @@ class GaussianDiffusionTrainer(nn.Module):
                         x0_aux_loss_0 = x0_loss_k
                     else:
                         x0_aux_loss_sum = x0_aux_loss_sum + x0_loss_k
-                # Consistency MSE at step k>=1: R^k(Rin(x_t)) vs Rin(x_{t-k})
+                # consistency MSE at step k>=1: R^k(Rin(x_t)) vs Rin(x_{t-k})
                 if k >= 1:
                     z_R_k = z  # current ring output after k laps: R^k(Rin(x_t))
                     if self.use_teacher_ddim and (z_teacher_list is not None):
                         z_tm_k = z_teacher_list[k]  # = self.teacher_model.rin(x_teacher_list[k], t_eff_k)
                     else:
                         x_tk = (
-                        extract(self.sqrt_alphas_bar, t_eff_k, x_0.shape) * x_0 +
-                        extract(self.sqrt_one_minus_alphas_bar, t_eff_k, x_0.shape) * noise
+                            extract(self.sqrt_alphas_bar, t_eff_k, x_0.shape) * x_0 +
+                            extract(self.sqrt_one_minus_alphas_bar, t_eff_k, x_0.shape) * noise
                         )
                         z_tm_k = self.model.rin(x_tk.detach(), t_eff_k)
-                    consist_mse_k = F.mse_loss(z_R_k, z_tm_k, reduction='none')
-                    consist_mse_sum = consist_mse_sum + consist_mse_k
+
+                    # consistency MSE with nested cosine transitions over multi-scale pooling
+                    # level 0: full-resolution MSE
+                    consist_mse_0 = F.mse_loss(z_R_k, z_tm_k, reduction='none')
+                    consist_mse_0 = consist_mse_0.mean(dim=[1, 2, 3], keepdim=True)
+                    # level 1: AvgPool(2)
+                    pooled_z_R_k = F.avg_pool2d(z_R_k, kernel_size=2, stride=2)
+                    pooled_z_tm_k = F.avg_pool2d(z_tm_k, kernel_size=2, stride=2)
+                    consist_mse_1 = F.mse_loss(pooled_z_R_k, pooled_z_tm_k, reduction='none')
+                    consist_mse_1 = consist_mse_1.mean(dim=[1, 2, 3], keepdim=True)
+                    # level 2: further AvgPool(2) on level-1 features
+                    pooled_z_R_k = F.avg_pool2d(pooled_z_R_k, kernel_size=2, stride=2)
+                    pooled_z_tm_k = F.avg_pool2d(pooled_z_tm_k, kernel_size=2, stride=2)
+                    consist_mse_2 = F.mse_loss(pooled_z_R_k, pooled_z_tm_k, reduction='none')
+                    consist_mse_2 = consist_mse_2.mean(dim=[1, 2, 3], keepdim=True)
+                    # first blend: level 1 vs level 2
+                    consist_mse_12 = _cosine_blend_losses(consist_mse_1, consist_mse_2, t_eff_k, self.T)
+                    # second blend: level 0 vs level 1
+                    consist_mse_01 = _cosine_blend_losses(consist_mse_0, consist_mse_12, t_eff_k, self.T)
+                    #consist_mse_sum = consist_mse_sum + consist_mse_01
+                    consist_mse_sum = consist_mse_sum + consist_mse_0  # disable cosine blending for debugging
+                
                 # advance R once for next step (unless reached s)
                 if k < s:
                     z = self.model.r.forward_one_step(z, t_eff_k)
