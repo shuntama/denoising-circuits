@@ -352,9 +352,9 @@ class Rin(nn.Module):
         if ENABLE_LORA:
             _enable_unet_lora(self.unet, rank=LORA_RANK, alpha=LORA_ALPHA)
         # output adapter
-        self.out_adapter = Adapter(ch_in=feat_ch, ch_mid=feat_ch, ch_out=feat_ch, T_embed=self.T, num_blocks=4)
+        self.out_adapter = Adapter(ch_in=feat_ch, ch_mid=feat_ch, ch_out=ch, T_embed=self.T, num_blocks=4)
         # GroupNorm to avoid drift (affine=False to make groupnorm idempotent)
-        self.gn_out = nn.GroupNorm(32, feat_ch, affine=False)
+        self.gn_out = nn.GroupNorm(32, ch, affine=False)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         feat = self.unet(sample=x, timestep=t.long())
@@ -365,13 +365,14 @@ class Rin(nn.Module):
 class Rout(nn.Module):
     def __init__(self, ch: int):
         super().__init__()
-        self.conv_in = nn.Conv2d(ch, ch, 3, 1, 1)
+        feat_ch = 128
+        self.conv_in = nn.Conv2d(ch, feat_ch, 3, 1, 1)
         init_conv_relu_(self.conv_in)
-        self.blocks = nn.ModuleList([ResBlock(ch=ch) for _ in range(4)])
-        self.in_proj = nn.Conv2d(ch, ch, 1, 1, 0, bias=False)
+        self.blocks = nn.ModuleList([ResBlock(ch=feat_ch) for _ in range(4)])
+        self.in_proj = nn.Conv2d(ch, feat_ch, 1, 1, 0, bias=False)
         self.tail = nn.Sequential(
             nn.SiLU(),
-            nn.Conv2d(ch, 3, 3, 1, 1),
+            nn.Conv2d(feat_ch, 3, 3, 1, 1),
         )
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -398,13 +399,14 @@ class Rout(nn.Module):
 class X0out(nn.Module):
     def __init__(self, ch: int):
         super().__init__()
-        self.conv_in = nn.Conv2d(ch, ch, 3, 1, 1)
+        feat_ch = 128
+        self.conv_in = nn.Conv2d(ch, feat_ch, 3, 1, 1)
         init_conv_relu_(self.conv_in)
-        self.blocks = nn.ModuleList([ResBlock(ch=ch) for _ in range(4)])
-        self.in_proj = nn.Conv2d(ch, ch, 1, 1, 0, bias=False)
+        self.blocks = nn.ModuleList([ResBlock(ch=feat_ch) for _ in range(4)])
+        self.in_proj = nn.Conv2d(ch, feat_ch, 1, 1, 0, bias=False)
         self.tail = nn.Sequential(
             nn.SiLU(),
-            nn.Conv2d(ch, 3, 3, 1, 1),
+            nn.Conv2d(feat_ch, 3, 3, 1, 1),
         )
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
