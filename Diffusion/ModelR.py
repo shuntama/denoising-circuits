@@ -80,10 +80,14 @@ def _set_trainable_time_embedding(unet: UNet2DModel, flag: bool = True) -> None:
         _set_requires_grad(unet.time_embedding, flag)
 
 
-# LoRA configuration (for attention projections q/k/v and proj_out)
+# LoRA configuration
 ENABLE_LORA: bool = True
+# Default rank/alpha for attention projections and general Linear layers
 LORA_RANK: int = 8
 LORA_ALPHA: int = 16
+# Optional: apply LoRA to non-attention Linear / conv1x1 layers
+ENABLE_LORA_LINEAR: bool = False
+ENABLE_LORA_CONV1x1: bool = False
 
 
 class LoRALinear(nn.Module):
@@ -165,55 +169,107 @@ def _set_module_by_path(root: nn.Module, path: str, new_module: nn.Module) -> bo
 
 def _enable_unet_lora(unet: UNet2DModel, rank: int = 8, alpha: int = 16) -> None:
     """
-    Inject LoRA into attention projections (Q/K/V and output) for legacy Attention blocks.
-    Targets:
-      - leaf names: to_q, to_k, to_v, q, k, v
-      - exact names: ...to_out.0, ...proj_out
+    Inject LoRA into UNet modules in three passes:
+      1) Attention projections (Q/K/V and output) for legacy Attention blocks
+         * leaf names: to_q, to_k, to_v, q, k, v
+         * exact names: ...to_out.0, ...proj_out
+      2) All remaining Linear layers (excluding time-embedding MLPs)
+      3) All remaining conv1x1 layers (Conv2d with kernel_size=1, groups=1)
     """
+    # 1: attention-specific projections (Q/K/V and attention output)
     target_leaf = {"to_q", "to_k", "to_v", "q", "k", "v"}
     out_exact = "to_out.0"
     out_alt = "proj_out"
-    replaced = 0
+    replaced_attn = 0
     for name, module in list(unet.named_modules()):
-        # restrict to attention-related modules only
         if ("attentions" not in name) and ("attn" not in name) and ("attention" not in name):
             continue
         if name.endswith(out_exact) or name.endswith(out_alt):
+            # attention output projection
             if isinstance(module, nn.Linear):
                 wrapped = LoRALinear(module, r=rank, alpha=alpha)
-                # align device/dtype to base
                 wrapped.lora_down.to(device=module.weight.device, dtype=module.weight.dtype)
                 wrapped.lora_up.to(device=module.weight.device, dtype=module.weight.dtype)
                 if _set_module_by_path(unet, name, wrapped):
-                    replaced += 1
+                    replaced_attn += 1
             elif isinstance(module, nn.Conv2d):
                 wrapped = LoRAConv2d(module, r=rank, alpha=alpha)
                 if not getattr(wrapped, "disabled", False):
                     wrapped.lora_down.to(device=module.weight.device, dtype=module.weight.dtype)
                     wrapped.lora_up.to(device=module.weight.device, dtype=module.weight.dtype)
                 if _set_module_by_path(unet, name, wrapped):
-                    replaced += 1
+                    replaced_attn += 1
             continue
         leaf = name.split(".")[-1]
         if leaf in target_leaf:
+            # attention q/k/v projections
             if isinstance(module, nn.Linear):
                 wrapped = LoRALinear(module, r=rank, alpha=alpha)
                 wrapped.lora_down.to(device=module.weight.device, dtype=module.weight.dtype)
                 wrapped.lora_up.to(device=module.weight.device, dtype=module.weight.dtype)
                 if _set_module_by_path(unet, name, wrapped):
-                    replaced += 1
+                    replaced_attn += 1
             elif isinstance(module, nn.Conv2d):
                 wrapped = LoRAConv2d(module, r=rank, alpha=alpha)
                 if not getattr(wrapped, "disabled", False):
                     wrapped.lora_down.to(device=module.weight.device, dtype=module.weight.dtype)
                     wrapped.lora_up.to(device=module.weight.device, dtype=module.weight.dtype)
                 if _set_module_by_path(unet, name, wrapped):
-                    replaced += 1
-    if replaced == 0:
-        print("Warning: lora_conv could not find attention projections to patch")
+                    replaced_attn += 1
+
+    # 2: general Linear layers (excluding time-embedding and already wrapped modules)
+    replaced_linear = 0
+    if ENABLE_LORA_LINEAR:
+        for name, module in list(unet.named_modules()):
+            # Skip already wrapped LoRA modules
+            if isinstance(module, (LoRALinear, LoRAConv2d)):
+                continue
+            # Skip time-embedding MLPs explicitly
+            if "time_embedding" in name:
+                continue
+            # Additional Linear targets
+            if isinstance(module, nn.Linear):
+                wrapped = LoRALinear(module, r=rank, alpha=alpha)
+                wrapped.lora_down.to(device=module.weight.device, dtype=module.weight.dtype)
+                wrapped.lora_up.to(device=module.weight.device, dtype=module.weight.dtype)
+                if _set_module_by_path(unet, name, wrapped):
+                    replaced_linear += 1
+
+    # 3: general conv1x1 layers (excluding time-embedding and already wrapped modules)
+    replaced_conv1x1 = 0
+    if ENABLE_LORA_CONV1x1:
+        for name, module in list(unet.named_modules()):
+            # Skip already wrapped LoRA modules
+            if isinstance(module, (LoRALinear, LoRAConv2d)):
+                continue
+            # Skip time-embedding MLPs explicitly (defensive; conv rarely appears there)
+            if "time_embedding" in name:
+                continue
+            # Additional conv1x1 targets
+            if isinstance(module, nn.Conv2d):
+                ks = module.kernel_size
+                if isinstance(ks, tuple):
+                    kh, kw = ks
+                else:
+                    kh = kw = ks
+                if (kh, kw) == (1, 1) and module.groups == 1:
+                    wrapped = LoRAConv2d(module, r=rank, alpha=alpha)
+                    if not getattr(wrapped, "disabled", False):
+                        wrapped.lora_down.to(device=module.weight.device, dtype=module.weight.dtype)
+                        wrapped.lora_up.to(device=module.weight.device, dtype=module.weight.dtype)
+                    if _set_module_by_path(unet, name, wrapped):
+                        replaced_conv1x1 += 1
+
+    total_replaced = replaced_attn + replaced_linear + replaced_conv1x1
+    if total_replaced == 0:
+        print("Warning: LoRA could not find any projections to patch")
     else:
         setattr(unet, "_lora_attn_enabled", True)
-        print(f"LoRA (legacy attention) enabled: patched {replaced} projections (rank={rank}, alpha={alpha})")
+        print(
+            f"LoRA enabled: patched {total_replaced} modules "
+            f"(attn={replaced_attn}, linear={replaced_linear}, conv1x1={replaced_conv1x1}, "
+            f"rank={rank}, alpha={alpha})"
+        )
 
 
 ### Models
