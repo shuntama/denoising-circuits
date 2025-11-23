@@ -363,12 +363,20 @@ class Rin(nn.Module):
 
 
 class Rout(nn.Module):
-    def __init__(self, ch: int):
+    def __init__(self, ch: int, T: int):
+        """
+        Time-conditioned readout head.
+        Input: feature map with `ch` channels -> project to feat_ch and apply FiLMResBlock stack with time t.
+        """
         super().__init__()
+        self.T = int(T)
         feat_ch = 128
         self.conv_in = nn.Conv2d(ch, feat_ch, 3, 1, 1)
         init_conv_relu_(self.conv_in)
-        self.blocks = nn.ModuleList([ResBlock(ch=feat_ch) for _ in range(4)])
+        # Time-conditioned residual blocks
+        self.blocks = nn.ModuleList([
+            FiLMResBlock(ch=feat_ch, T_embed=self.T) for _ in range(4)
+        ])
         self.in_proj = nn.Conv2d(ch, feat_ch, 1, 1, 0, bias=False)
         self.tail = nn.Sequential(
             nn.SiLU(),
@@ -388,21 +396,32 @@ class Rout(nn.Module):
                 else:
                     init_conv_relu_(m)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, ch, H, W], t: [B] or broadcastable to batch size.
+        """
         h = self.conv_in(x)
         for blk in self.blocks:
-            h = blk(h)
+            h = blk(h, t)
         h = h + self.in_proj(x)
         return self.tail(h)
 
 
 class X0out(nn.Module):
-    def __init__(self, ch: int):
+    def __init__(self, ch: int, T: int):
+        """
+        Time-conditioned x0 head.
+        Input: feature map with `ch` channels -> project to feat_ch and apply FiLMResBlock stack with time t.
+        """
         super().__init__()
+        self.T = int(T)
         feat_ch = 128
         self.conv_in = nn.Conv2d(ch, feat_ch, 3, 1, 1)
         init_conv_relu_(self.conv_in)
-        self.blocks = nn.ModuleList([ResBlock(ch=feat_ch) for _ in range(4)])
+        # Time-conditioned residual blocks
+        self.blocks = nn.ModuleList([
+            FiLMResBlock(ch=feat_ch, T_embed=self.T) for _ in range(4)
+        ])
         self.in_proj = nn.Conv2d(ch, feat_ch, 1, 1, 0, bias=False)
         self.tail = nn.Sequential(
             nn.SiLU(),
@@ -422,10 +441,13 @@ class X0out(nn.Module):
                 else:
                     init_conv_relu_(m)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, ch, H, W], t: [B] or broadcastable to batch size.
+        """
         h = self.conv_in(x)
         for blk in self.blocks:
-            h = blk(h)
+            h = blk(h, t)
         h = h + self.in_proj(x)
         return self.tail(h)
 
@@ -477,12 +499,12 @@ class RNet(nn.Module):
         self.T = int(T)
         self.rin = Rin(ch=ch, T=self.T)
         self.r = R(ch=ch, T=self.T)
-        self.rout = Rout(ch=ch)
-        self.x0out = X0out(ch=ch)
+        self.rout = Rout(ch=ch, T=self.T)
+        self.x0out = X0out(ch=ch, T=self.T)
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         z = self.rin(x_t, t.long())
         # r is not used for normal inference (only for multi-step training and inference)
-        return self.rout(z)
+        return self.rout(z, t.long())
 
 

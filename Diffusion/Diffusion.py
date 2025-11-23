@@ -127,7 +127,7 @@ class GaussianDiffusionTrainer(nn.Module):
                         x_curr = x_teacher_list[step - 1]
                         # split teacher inference into Rin and Rout
                         z_curr = self.teacher_model.rin(x_curr, t_curr)
-                        pred_curr = self.teacher_model.rout(z_curr)
+                        pred_curr = self.teacher_model.rout(z_curr, t_curr)
                         z_teacher_list.append(z_curr)
                         pred_teacher_list.append(pred_curr)
                         # derive eps from teacher pred by current mode
@@ -150,7 +150,7 @@ class GaussianDiffusionTrainer(nn.Module):
                     t_eff_s = t - s
                     x_s = x_teacher_list[s]
                     z_s = self.teacher_model.rin(x_s, t_eff_s)
-                    pred_s = self.teacher_model.rout(z_s)
+                    pred_s = self.teacher_model.rout(z_s, t_eff_s)
                     z_teacher_list.append(z_s)
                     pred_teacher_list.append(pred_s)
                 self.teacher_model.train()
@@ -158,7 +158,7 @@ class GaussianDiffusionTrainer(nn.Module):
             for k in range(int(s) + 1):
                 # Rout at effective timestep t_eff = t - k
                 t_eff_k = t - k
-                pred_k = self.model.rout(z)
+                pred_k = self.model.rout(z, t_eff_k)
                 # main loss at step k
                 if self.pred_mode == 'v':
                     if (k == 0) or (not self.use_teacher_ddim) or (x_teacher_list is None):
@@ -186,13 +186,13 @@ class GaussianDiffusionTrainer(nn.Module):
                     main_loss_sum = main_loss_sum + main_loss_k
                 # optional auxiliary x0 supervision via x0out
                 if self.use_x0_aux and (self.pred_mode == 'v' or self.pred_mode == 'eps'):
-                    x0_pred_k = self.model.x0out(z)
+                    x0_pred_k = self.model.x0out(z, t_eff_k)
                     if (k == 0) or (not self.use_teacher_ddim) or (x_teacher_list is None):
                         x0_target_k = x_0
                     else:
-                        z_teacher_k = z_teacher_list[k]  # = self.teacher_model.rin(x_teacher_list[k], t_eff_k) 
+                        z_teacher_k = z_teacher_list[k]  # = self.teacher_model.rin(x_teacher_list[k], t_eff_k)
                         with torch.no_grad():
-                            x0_target_k = self.teacher_model.x0out(z_teacher_k)
+                            x0_target_k = self.teacher_model.x0out(z_teacher_k, t_eff_k)
                     x0_loss_k = F.mse_loss(x0_pred_k, x0_target_k, reduction='none')
                     if k == 0:
                         x0_aux_loss_0 = x0_loss_k
@@ -306,14 +306,15 @@ class GaussianDiffusionSampler(nn.Module):
                     print(time_step)
                 t = x_T.new_ones([B, ], dtype=torch.long) * time_step
                 z = self.model.r.forward_one_step(z, t)
-            # Prefer x0_aux head if enabled
+            # prefer x0_aux head if enabled
+            t0 = x_T.new_zeros([B, ], dtype=torch.long)  # use t=0 for time-conditioned heads in ring_infer mode
             if self.use_x0_aux:
-                x0_pred = self.model.x0out(z)
+                x0_pred = self.model.x0out(z, t0)
             elif self.pred_mode == 'x0':
-                x0_pred = self.model.rout(z)
+                x0_pred = self.model.rout(z, t0)
             elif self.pred_mode == 'v' or self.pred_mode == 'eps':
-                # Convert Rout prediction (v or eps) into x0 using one-step formulas at t=T-1
-                pred = self.model.rout(z)
+                # convert Rout prediction (v or eps) into x0 using one-step formulas at t=T-1
+                pred = self.model.rout(z, t0)
                 t0 = x_T.new_ones([B, ], dtype=torch.long) * (self.T - 1)
                 c0 = extract(torch.sqrt(torch.cumprod(1. - self.betas, dim=0)), t0, x_T.shape)
                 c1 = extract(torch.sqrt(1. - torch.cumprod(1. - self.betas, dim=0)), t0, x_T.shape)
