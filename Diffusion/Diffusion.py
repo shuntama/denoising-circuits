@@ -210,26 +210,13 @@ class GaussianDiffusionTrainer(nn.Module):
                         )
                         z_tm_k = self.model.rin(x_tk.detach(), t_eff_k)
 
-                    # consistency MSE with nested cosine transitions over multi-scale pooling
-                    # level 0: full-resolution MSE
-                    consist_mse_0 = F.mse_loss(z_R_k, z_tm_k, reduction='none')
-                    consist_mse_0 = consist_mse_0.mean(dim=[1, 2, 3], keepdim=True)
-                    # level 1: AvgPool(2)
-                    pooled_z_R_k = F.avg_pool2d(z_R_k, kernel_size=2, stride=2)
-                    pooled_z_tm_k = F.avg_pool2d(z_tm_k, kernel_size=2, stride=2)
-                    consist_mse_1 = F.mse_loss(pooled_z_R_k, pooled_z_tm_k, reduction='none')
-                    consist_mse_1 = consist_mse_1.mean(dim=[1, 2, 3], keepdim=True)
-                    # level 2: further AvgPool(2) on level-1 features
-                    pooled_z_R_k = F.avg_pool2d(pooled_z_R_k, kernel_size=2, stride=2)
-                    pooled_z_tm_k = F.avg_pool2d(pooled_z_tm_k, kernel_size=2, stride=2)
-                    consist_mse_2 = F.mse_loss(pooled_z_R_k, pooled_z_tm_k, reduction='none')
-                    consist_mse_2 = consist_mse_2.mean(dim=[1, 2, 3], keepdim=True)
-                    # first blend: level 1 vs level 2
-                    consist_mse_12 = _cosine_blend_losses(consist_mse_1, consist_mse_2, t_eff_k, self.T)
-                    # second blend: level 0 vs level 1
-                    consist_mse_01 = _cosine_blend_losses(consist_mse_0, consist_mse_12, t_eff_k, self.T)
-                    #consist_mse_sum = consist_mse_sum + consist_mse_01
-                    consist_mse_sum = consist_mse_sum + consist_mse_0  # disable cosine blending for debugging
+                    consist_mse_k = F.mse_loss(z_R_k, z_tm_k, reduction='none')
+                    # time-dependent weighting: (t_eff_k / (T-1)) ** alpha
+                    #tau = t_eff_k.float() / max(self.T - 1, 1)
+                    #w_consist = tau.pow(0.2)
+                    #if w_consist.ndim == 1:
+                    #    w_consist = w_consist.view(-1, 1, 1, 1)
+                    consist_mse_sum = consist_mse_sum + consist_mse_k #* w_consist
                 
                 # advance R once for next step (unless reached s)
                 if k < s:
