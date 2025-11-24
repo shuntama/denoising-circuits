@@ -80,6 +80,16 @@ def _set_trainable_time_embedding(unet: UNet2DModel, flag: bool = True) -> None:
         _set_requires_grad(unet.time_embedding, flag)
 
 
+def _set_trainable_norms_unet(unet: UNet2DModel, flag: bool = True) -> None:
+    """
+    Make normalization affine parameters (gamma/beta) trainable or frozen.
+    Applies to GroupNorm/LayerNorm/BatchNorm modules inside the UNet backbone.
+    """
+    for module in unet.modules():
+        if isinstance(module, (nn.GroupNorm, nn.LayerNorm, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            _set_requires_grad(module, flag)
+
+
 # LoRA configuration
 ENABLE_LORA: bool = True
 # Default rank/alpha for attention projections and general Linear layers
@@ -404,6 +414,7 @@ class Rin(nn.Module):
         _freeze_all_params(self.unet)
         _set_trainable_time_embedding(self.unet, flag=True)  # adapt to different prediction-modes
         _set_trainable_first_layers_unet(self.unet, flag=True)
+        _set_trainable_norms_unet(self.unet, flag=True)      # enable gamma/beta in norms
         # enable attention LoRA for legacy attention blocks (q/k/v/proj_out)
         if ENABLE_LORA:
             _enable_unet_lora(self.unet, rank=LORA_RANK, alpha=LORA_ALPHA)
@@ -525,6 +536,7 @@ class R(nn.Module):
         self.unet.eval()
         _freeze_all_params(self.unet)
         _set_trainable_time_embedding(self.unet, flag=True)
+        _set_trainable_norms_unet(self.unet, flag=True)  # enable gamma/beta in norms
         # enable attention LoRA for legacy attention blocks (q/k/v/proj_out)
         if ENABLE_LORA:
             _enable_unet_lora(self.unet, rank=LORA_RANK, alpha=LORA_ALPHA)
