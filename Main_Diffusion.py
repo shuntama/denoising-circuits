@@ -9,7 +9,8 @@ def main(model_config = None):
         "model_type": "rnet", # "unet" or "rnet"
         "pred_mode": "v",  # "eps" or "v" or "x0"
         "use_x0_aux": True,  # when pred_mode=="v" or "eps": enable auxiliary x0 supervision and inference head
-        "use_teacher_ddim": True,  # k>0: DDIM teacher supervision with EMA model
+        "use_teacher_ddim": True,  # k>0: DDIM teacher supervision
+        "enable_teacher_ema": False,  # if True and use_teacher_ddim: use separate EMA teacher model
         "epoch": 100,
         "batch_size": 128,
         "lr": 2e-4,

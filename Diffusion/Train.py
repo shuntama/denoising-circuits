@@ -49,6 +49,11 @@ class EMA:
                 param.data = self.backup[name]
         self.backup = {}
 
+    def copy_to(self, target_model):
+        for name, param in target_model.named_parameters():
+            if name in self.shadow:
+                param.data.copy_(self.shadow[name].to(device=param.data.device, dtype=param.data.dtype))
+
 
 def train(modelConfig: Dict):
     # set up environment
@@ -92,6 +97,28 @@ def train(modelConfig: Dict):
         model_to_load = getattr(net_model, '_orig_mod', net_model)
         model_to_load.load_state_dict(ckpt, strict=True)
     
+    # teacher setup (for DDIM self-supervision)
+    use_teacher_ddim = modelConfig.get("use_teacher_ddim", False)
+    enable_teacher_ema = modelConfig.get("enable_teacher_ema", False)
+    teacher_model = None
+    if use_teacher_ddim:
+        if enable_teacher_ema:
+            # build a separate teacher model with the same architecture
+            if modelConfig["model_type"] == "rnet":
+                teacher_model = RNet(T=modelConfig["T"], ch=modelConfig["channel"])
+            else:
+                teacher_model = UNet(T=modelConfig["T"])
+            # initialize teacher from current student weights (unwrap if compiled)
+            student_base = getattr(net_model, "_orig_mod", net_model)
+            teacher_model.load_state_dict(student_base.state_dict(), strict=True)
+            teacher_model = teacher_model.to(device).to(memory_format=torch.channels_last)
+            teacher_model.eval()
+            for p in teacher_model.parameters():
+                p.requires_grad = False
+        else:
+            # fallback: use student model directly (original behavior)
+            teacher_model = net_model
+
     # optimizer and scheduler setup
     epoch_value = modelConfig["epoch"]
     is_fractional_epoch = (epoch_value < 1.0)
@@ -120,8 +147,8 @@ def train(modelConfig: Dict):
         step_probs=modelConfig.get("step_probs", None),
         pred_mode=modelConfig.get("pred_mode", "eps"),
         use_x0_aux=modelConfig.get("use_x0_aux", False),
-        use_teacher_ddim=modelConfig.get("use_teacher_ddim", False),
-        teacher_model=net_model,  # for DDIM self-supervision
+        use_teacher_ddim=use_teacher_ddim,
+        teacher_model=teacher_model,
     ).to(device)
     if modelConfig.get("use_compile", True):
         try:
@@ -175,6 +202,9 @@ def train(modelConfig: Dict):
                 scaler.update()
                 # update EMA after optimizer step
                 ema.update()
+                # keep EMA teacher in sync (if enabled)
+                if use_teacher_ddim and enable_teacher_ema and (teacher_model is not None):
+                    ema.copy_to(teacher_model)
                 num_batches += 1
                 # log progress
                 postfix_dict = {
